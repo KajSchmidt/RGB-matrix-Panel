@@ -1,11 +1,7 @@
 /*
 RGBmatrixPanel Arduino library for Adafruit 16x32 and 32x32 RGB LED
-matrix panels.  Pick one up at:
-  http://www.adafruit.com/products/420
-  http://www.adafruit.com/products/607
-
-This version uses a few tricks to achieve better performance and/or
-lower CPU utilization:
+matrix panels.  This version uses a few tricks to achieve better
+performance and/or lower CPU utilization:
 
 - To control LED brightness, traditional PWM is eschewed in favor of
   Binary Code Modulation, which operates through a succession of periods
@@ -27,10 +23,6 @@ lower CPU utilization:
   instruction set in what seemed like an obvious chunk of code.  Since
   it's only a few short instructions, this loop is also "unrolled" --
   each iteration is stated explicitly, not through a control loop.
-
-Written by Limor Fried/Ladyada & Phil Burgess/PaintYourDragon for
-Adafruit Industries.
-BSD license, all text above must be included in any redistribution.
 */
 
 #include "RGBmatrixPanel.h"
@@ -68,12 +60,26 @@ BSD license, all text above must be included in any redistribution.
  #define DATAPORT PORTD
  #define DATADIR  DDRD
  #define SCLKPORT PORTB
+#elif defined(__AVR_ATmega1284__)
+ // MegaJr
+ #define DATAPORT PORTD
+ #define DATADIR  DDRD
+ #define SCLKPORT PORTB
 #else
  // Ports for "standard" boards (Arduino Uno, Duemilanove, etc.)
  #define DATAPORT PORTD
  #define DATADIR  DDRD
  #define SCLKPORT PORTB
 #endif
+
+// This Dual Panel mode works in cascade as a 16x64 Matrix.
+// Tested on an Uno, only works in single buffering mode,
+// not enough memory for double buffering.  Lots of flickering.
+// Tested on a 1284P (MegaJrV2) board, with double buffering,
+// looks very good, no flickering.
+// Change to number of Panels (1 - 4).
+#define nPanels (2)
+
 
 // The fact that the display driver interrupt stuff is tied to the
 // singular Timer1 doesn't really take well to object orientation with
@@ -90,9 +96,10 @@ void RGBmatrixPanel::init(uint8_t rows, uint8_t a, uint8_t b, uint8_t c,
   uint8_t sclk, uint8_t latch, uint8_t oe, boolean dbuf) {
 
   nRows = rows; // Number of multiplexed rows; actual height is 2X this
+//  constructor((32*nPanels), nRows * 2);
 
   // Allocate and initialize matrix buffer:
-  int buffsize  = 32 * nRows * 3, // x3 = 3 bytes holds 4 planes "packed"
+  int buffsize  = (32*nPanels) * nRows * 3, // x3 = 3 bytes holds 4 planes "packed"
       allocsize = (dbuf == true) ? (buffsize * 2) : buffsize;
   if(NULL == (matrixbuff[0] = (uint8_t *)malloc(allocsize))) return;
   memset(matrixbuff[0], 0, allocsize);
@@ -131,8 +138,8 @@ void RGBmatrixPanel::init(uint8_t rows, uint8_t a, uint8_t b, uint8_t c,
 RGBmatrixPanel::RGBmatrixPanel(
   uint8_t a, uint8_t b, uint8_t c,
   uint8_t sclk, uint8_t latch, uint8_t oe, boolean dbuf) :
-  Adafruit_GFX(32, 16) {
-
+  Adafruit_GFX((32*nPanels), 16) {
+  
   init(8, a, b, c, sclk, latch, oe, dbuf);
 }
 
@@ -140,7 +147,7 @@ RGBmatrixPanel::RGBmatrixPanel(
 RGBmatrixPanel::RGBmatrixPanel(
   uint8_t a, uint8_t b, uint8_t c, uint8_t d,
   uint8_t sclk, uint8_t latch, uint8_t oe, boolean dbuf) :
-  Adafruit_GFX(32, 32) {
+  Adafruit_GFX((32*nPanels), 32) {
 
   init(16, a, b, c, sclk, latch, oe, dbuf);
 
@@ -175,7 +182,7 @@ void RGBmatrixPanel::begin(void) {
   // Set up Timer1 for interrupt:
   TCCR1A  = _BV(WGM11); // Mode 14 (fast PWM), OC1A off
   TCCR1B  = _BV(WGM13) | _BV(WGM12) | _BV(CS10); // Mode 14, no prescale
-  ICR1    = 100;
+  ICR1    = 100;        // Counter1 TOP value
   TIMSK1 |= _BV(TOIE1); // Enable Timer1 interrupt
   sei();                // Enable global interrupts
 }
@@ -304,11 +311,11 @@ void RGBmatrixPanel::drawPixel(int16_t x, int16_t y, uint16_t c) {
     ptr = &matrixbuff[backindex][y * WIDTH * (nPlanes - 1) + x]; // Base addr
     // Plane 0 is a tricky case -- its data is spread about,
     // stored in least two bits not used by the other planes.
-    ptr[64] &= ~B00000011;            // Plane 0 R,G mask out in one op
-    if(r & 1) ptr[64] |=  B00000001;  // Plane 0 R: 64 bytes ahead, bit 0
-    if(g & 1) ptr[64] |=  B00000010;  // Plane 0 G: 64 bytes ahead, bit 1
-    if(b & 1) ptr[32] |=  B00000001;  // Plane 0 B: 32 bytes ahead, bit 0
-    else      ptr[32] &= ~B00000001;  // Plane 0 B unset; mask out
+    ptr[(64*nPanels)] &= ~B00000011;            // Plane 0 R,G mask out in one op
+    if(r & 1) ptr[(64*nPanels)] |=  B00000001;  // Plane 0 R: 64 bytes ahead, bit 0
+    if(g & 1) ptr[(64*nPanels)] |=  B00000010;  // Plane 0 G: 64 bytes ahead, bit 1
+    if(b & 1) ptr[(32*nPanels)] |=  B00000001;  // Plane 0 B: 32 bytes ahead, bit 0
+    else      ptr[(32*nPanels)] &= ~B00000001;  // Plane 0 B unset; mask out
     // The remaining three image planes are more normal-ish.
     // Data is stored in the high 6 bits so it can be quickly
     // copied to the DATAPORT register w/6 output lines.
@@ -324,8 +331,8 @@ void RGBmatrixPanel::drawPixel(int16_t x, int16_t y, uint16_t c) {
     // bits, except for the plane 0 stuff, using 2 least bits.
     ptr = &matrixbuff[backindex][(y - nRows) * WIDTH * (nPlanes - 1) + x];
     *ptr &= ~B00000011;               // Plane 0 G,B mask out in one op
-    if(r & 1)  ptr[32] |=  B00000010; // Plane 0 R: 32 bytes ahead, bit 1
-    else       ptr[32] &= ~B00000010; // Plane 0 R unset; mask out
+    if(r & 1)  ptr[(32*nPanels)] |=  B00000010; // Plane 0 R: 32 bytes ahead, bit 1
+    else       ptr[(32*nPanels)] &= ~B00000010; // Plane 0 R unset; mask out
     if(g & 1) *ptr     |=  B00000001; // Plane 0 G: bit 0
     if(b & 1) *ptr     |=  B00000010; // Plane 0 B: bit 0
     for(; bit < limit; bit <<= 1) {
@@ -343,7 +350,7 @@ void RGBmatrixPanel::fillScreen(uint16_t c) {
     // For black or white, all bits in frame buffer will be identically
     // set or unset (regardless of weird bit packing), so it's OK to just
     // quickly memset the whole thing:
-    memset(matrixbuff[backindex], c, 32 * nRows * 3);
+    memset(matrixbuff[backindex], c, (32*nPanels) * nRows * 3);
   } else {
     // Otherwise, need to handle it the long way:
     Adafruit_GFX::fillScreen(c);
@@ -368,7 +375,7 @@ void RGBmatrixPanel::swapBuffers(boolean copy) {
     swapflag = true;                  // Set flag here, then...
     while(swapflag == true) delay(1); // wait for interrupt to clear it
     if(copy == true)
-      memcpy(matrixbuff[backindex], matrixbuff[1-backindex], 32 * nRows * 3);
+      memcpy(matrixbuff[backindex], matrixbuff[1-backindex], (32*nPanels) * nRows * 3);
   }
 }
 
@@ -379,11 +386,11 @@ void RGBmatrixPanel::swapBuffers(boolean copy) {
 // back into the display using a pgm_read_byte() loop.
 void RGBmatrixPanel::dumpMatrix(void) {
 
-  int i, buffsize = 32 * nRows * 3;
+  int i, buffsize = (32*nPanels) * nRows * 3;
 
   Serial.print("\n\n"
     "#include <avr/pgmspace.h>\n\n"
-    "static const uint8_t PROGMEM img[] = {\n  ");
+    "static PROGMEM prog_uchar img[] = {\n  ");
 
   for(i=0; i<buffsize; i++) {
     Serial.print("0x");
@@ -462,7 +469,7 @@ void RGBmatrixPanel::updateDisplay(void) {
   // result because that time is implicit between the timer overflow
   // (interrupt triggered) and the initial LEDs-off line at the start
   // of this method.
-  t = (nRows > 8) ? LOOPTIME : (LOOPTIME * 2);
+  t = (nRows > 8) ? (LOOPTIME*nPanels) : ((LOOPTIME*nPanels) * 2);
   duration = ((t + CALLOVERHEAD * 2) << plane) - CALLOVERHEAD;
 
   // Borrowing a technique here from Ray's Logic:
@@ -538,6 +545,27 @@ void RGBmatrixPanel::updateDisplay(void) {
     pew pew pew pew pew pew pew pew
     pew pew pew pew pew pew pew pew
     pew pew pew pew pew pew pew pew
+    // for Panel#2
+#if nPanels > 1
+    pew pew pew pew pew pew pew pew
+    pew pew pew pew pew pew pew pew
+    pew pew pew pew pew pew pew pew
+    pew pew pew pew pew pew pew pew
+#endif
+    // for Panel#3
+#if nPanels > 2
+    pew pew pew pew pew pew pew pew
+    pew pew pew pew pew pew pew pew
+    pew pew pew pew pew pew pew pew
+    pew pew pew pew pew pew pew pew
+#endif
+    // for Panel#4
+#if nPanels > 3
+    pew pew pew pew pew pew pew pew
+    pew pew pew pew pew pew pew pew
+    pew pew pew pew pew pew pew pew
+    pew pew pew pew pew pew pew pew
+#endif
 
     // From the "Unsolved Mysteries" department: "buffptr += 32" doesn't
     // work here, scrambles the display.  "buffptr = ptr" does, even though
@@ -555,11 +583,11 @@ void RGBmatrixPanel::updateDisplay(void) {
     // output for plane 0 is handled while plane 3 is being displayed...
     // because binary coded modulation is used (not PWM), that plane
     // has the longest display interval, so the extra work fits.
-    for(i=0; i<32; i++) {
+    for(i=0; i<(32*nPanels); i++) {
       DATAPORT =
         ( ptr[i]    << 6)         |
-        ((ptr[i+32] << 4) & 0x30) |
-        ((ptr[i+64] << 2) & 0x0C);
+        ((ptr[i+(32*nPanels)] << 4) & 0x30) |
+        ((ptr[i+(64*nPanels)] << 2) & 0x0C);
       SCLKPORT = tick; // Clock lo
       SCLKPORT = tock; // Clock hi
     } 
